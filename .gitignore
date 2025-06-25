@@ -32,3 +32,6 @@ go.work.sum
 # .vscode/
 
 dist/
+pat
+test.sh
+*.sh

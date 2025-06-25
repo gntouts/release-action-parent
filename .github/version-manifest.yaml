@@ -1,0 +1,10 @@
+parent:
+  version: v0.1.2
+dependencies:
+  - child1:
+      repo: gntouts/release-action-child1
+      version: v0.0.3
+  - child2:
+      repo: gntouts/release-action-child2
+      version: v0.0.4
+

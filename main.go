@@ -12,7 +12,8 @@ var version string
 func processArgs(args []string) (output string, shouldExit bool, exitCode int) {
 	// Handle --version flag
 	if len(args) == 1 && args[0] == "--version" {
-		return version, true, 0
+		versionString := fmt.Sprintf("echo %s", version)
+		return versionString, true, 0
 	}
 
 	// Handle empty args

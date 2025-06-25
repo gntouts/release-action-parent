@@ -6,7 +6,6 @@ on:
 
   workflow_dispatch:
 
-
 jobs:
   test:
     name: Run Tests
@@ -22,21 +21,12 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
+        cache: true
         
     - name: Create VERSION file
       run: |
         echo "${GITHUB_REF#refs/tags/}" > VERSION
         cat VERSION
-      
-    - name: Cache Go modules
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
     
     - name: Download dependencies
       run: go mod download
@@ -61,20 +51,11 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
+        cache: false
         go-version: '1.24'
         
     - name: Create VERSION file
       run: echo "${GITHUB_REF#refs/tags/}" > VERSION
-      
-    - name: Cache Go modules
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
     
     - name: Download dependencies
       run: go mod download
@@ -128,6 +109,60 @@ jobs:
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: binaries-${{ github.ref_name }}
+        name: artifacts-${{ github.ref_name }}
         path: dist/
         retention-days: 30
+
+  trigger-child-repo:
+    needs: build
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+    - name: Trigger secondary repository workflow
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ secrets.MY_GITHUB_TOKEN }}
+        repository: gntouts/release-action-child1
+        event-type: triggered-by-${{ github.run_id }}
+        client-payload: |
+          {
+            "main_repo": "${{ github.repository }}",
+            "main_run_id": "${{ github.run_id }}",
+            "commit_sha": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "callback_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+
+  wait-for-secondary:
+    needs: [trigger-child-repo]
+    runs-on: ubuntu-latest
+    timeout-minutes: 29
+    
+    steps:
+      - name: Wait
+        id: wait
+        uses: gntouts/wait-external-workflow@v1.0.0
+        with:
+          github_token: ${{ secrets.MY_GITHUB_TOKEN }}
+          target_repo: gntouts/release-action-child1
+          parent_run_id: ${{ github.run_id }}
+          timeout: 5
+      - name: Log wait results
+        run: |
+          echo "Result: ${{ steps.wait.outputs.result }}"
+          echo "Secondary Run ID: ${{ steps.wait.outputs.child_run_id }}"
+
+      - name: Fetch Child Repo Artifacts
+        if: steps.wait.outputs.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          repository: gntouts/release-action-child1
+          github-token: ${{ secrets.MY_GITHUB_TOKEN }}
+          merge-multiple: true
+          path: '${{ github.workspace }}/child-artifacts'
+          run-id: ${{ steps.wait.outputs.child_run_id }}
+      - name: List Child Artifacts
+        run: |
+          echo "Child artifacts:"
+          ls -l "${{ github.workspace }}/child-artifacts"

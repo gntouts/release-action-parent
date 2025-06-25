@@ -25,7 +25,7 @@ func TestProcessArgs(t *testing.T) {
 		{
 			name:         "version flag",
 			args:         []string{"--version"},
-			wantOutput:   "1.2.3-abc123",
+			wantOutput:   "echo 1.2.3-abc123",
 			wantExit:     true,
 			wantExitCode: 0,
 		},

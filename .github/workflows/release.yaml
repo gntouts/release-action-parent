@@ -3,7 +3,6 @@ on:
   push:
     tags:
       - 'v*'
-
   workflow_dispatch:
 
 jobs:
@@ -21,7 +20,7 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: '1.24'
-        cache: true
+        cache: false
         
     - name: Create VERSION file
       run: |
@@ -63,16 +62,13 @@ jobs:
     - name: Build binaries for all platforms
       run: make build-all
       
-    - name: Show binary sizes
-      run: make size
-      
     - name: Generate checksums
       run: |
         cd dist
         sha256sum * > checksums.txt
         cat checksums.txt
       
-    - name: Create release
+    - name: Create initial release
       uses: softprops/action-gh-release@v2
       with:
         files: |
@@ -112,18 +108,43 @@ jobs:
         name: artifacts-${{ github.ref_name }}
         path: dist/
         retention-days: 30
-
-  trigger-child-repo:
+  
+  setup-children-repos:
+    name: Setup Children Repositories
     needs: build
     runs-on: ubuntu-latest
+    outputs:
+      repositories: ${{ steps.read-repos.outputs.repositories }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Read repositories from YAML
+        id: read-repos
+        run: |
+          # Install yq if not already available
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          
+          # Read repositories from YAML and convert to JSON array
+          repositories=$(yq eval '.repositories' .github/children.yaml -o=json -I=0 | tr -d '\n')
+          echo "repositories=$repositories" >> $GITHUB_OUTPUT
+          echo "Found repositories: $repositories"
+  
+  trigger-children-repos:
+    name: Trigger Children Repositories
+    needs: setup-children-repos
+    runs-on: ubuntu-latest
     if: success()
-
+    strategy:
+      matrix:
+        repository: ${{ fromJson(needs.setup-children-repos.outputs.repositories) }}
     steps:
     - name: Trigger secondary repository workflow
       uses: peter-evans/repository-dispatch@v3
       with:
         token: ${{ secrets.MY_GITHUB_TOKEN }}
-        repository: gntouts/release-action-child1
+        repository: ${{ matrix.repository }}
         event-type: triggered-by-${{ github.run_id }}
         client-payload: |
           {
@@ -134,20 +155,25 @@ jobs:
             "callback_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           }
 
-  wait-for-secondary:
-    needs: [trigger-child-repo]
+  wait-for-children-repos:
+    name: Wait for Children Repositories
+    needs: [trigger-children-repos, setup-children-repos]
     runs-on: ubuntu-latest
-    timeout-minutes: 29
-    
+    timeout-minutes: 10
+    if: success()
+    strategy:
+      matrix:
+        repository: ${{ fromJson(needs.setup-children-repos.outputs.repositories) }}
     steps:
-      - name: Wait
+      - name: Wait for child workflow
         id: wait
         uses: gntouts/wait-external-workflow@v1.0.0
         with:
           github_token: ${{ secrets.MY_GITHUB_TOKEN }}
-          target_repo: gntouts/release-action-child1
+          target_repo: ${{ matrix.repository }}
           parent_run_id: ${{ github.run_id }}
           timeout: 5
+          
       - name: Log wait results
         run: |
           echo "Result: ${{ steps.wait.outputs.result }}"
@@ -157,12 +183,81 @@ jobs:
         if: steps.wait.outputs.result == 'success'
         uses: actions/download-artifact@v4
         with:
-          repository: gntouts/release-action-child1
+          repository: ${{ matrix.repository }}
           github-token: ${{ secrets.MY_GITHUB_TOKEN }}
           merge-multiple: true
           path: '${{ github.workspace }}/child-artifacts'
           run-id: ${{ steps.wait.outputs.child_run_id }}
+          
       - name: List Child Artifacts
+        if: steps.wait.outputs.result == 'success'
         run: |
           echo "Child artifacts:"
           ls -l "${{ github.workspace }}/child-artifacts"
+        
+      - name: Upload child artifacts for final release
+        if: steps.wait.outputs.result == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: child-artifacts-${{ strategy.job-index }}
+          path: '${{ github.workspace }}/child-artifacts'
+          retention-days: 1
+
+  create-final-release:
+    name: Create Final Release
+    needs: wait-for-children-repos
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist/
+          
+      - name: List all artifacts
+        run: |
+          echo "All artifacts:"
+          find dist/ -type f -ls
+          
+      - name: Generate final checksums
+        id: generate-checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+          cat checksums.txt
+          echo "checksums<<EOF" >> $GITHUB_OUTPUT
+          cat checksums.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        
+      - name: Update release with all artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+          body: |
+            ## Release ${{ github.ref_name }}
+            
+            ### Changes
+            - Automated release from tag ${{ github.ref_name }}
+            - Includes artifacts from child repositories
+            
+            ### Binary Checksums
+            ```
+            ${{ steps.generate-checksums.outputs.checksums }}
+            ```
+            
+            ### Installation
+            Download the appropriate binary for your platform and
+            make the binary executable (Linux/macOS):
+            ```bash
+            chmod +x echo-*
+            ```
+          draft: true
+          prerelease: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}

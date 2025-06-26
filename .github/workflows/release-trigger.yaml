@@ -6,10 +6,15 @@ on:
       - main
     paths:
       - .github/version-manifest.yaml
+  workflow_dispatch:
 
 jobs:
   parse-version-manifest:
     runs-on: ubuntu-latest
+    outputs: 
+      dependencies: ${{ steps.parse_manifest.outputs.dependencies }}
+      version: ${{ steps.parse_manifest.outputs.version }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -19,48 +24,158 @@ jobs:
       - name: Parse version manifest
         id: parse_manifest
         run: |
-          echo "Parsing version manifest..."
+          # Install yq for YAML parsing
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+          manifest_json=$(yq eval '.dependencies[]' .github/version-manifest.yaml -o json)
+          echo "manifest_json=$manifest_json"
+
+          dependencies=$(echo $manifest_json | jq -s '[.[] | to_entries[] | {name: .key, repo: .value.repo, version: .value.version}]')
+          echo "dependencies=$dependencies"
+          echo "$dependencies" | jq .
+
+          dependencies=$(echo $dependencies | tr -d '\n')
+          echo "dependencies=$dependencies" >> $GITHUB_OUTPUT
+          
           VERSION=$(yq eval '.parent.version' .github/version-manifest.yaml)
-          echo "Parsed version: $VERSION"
-
-          # for each dependency, extract the repo and version
-          DEPENDENCIES=$(yq eval '.dependencies[] | "\(.repo)@\(.version)"' .github/version-manifest.yaml)
-          echo "Parsed dependencies: $DEPENDENCIES"
-
-          # Format the dependencies as JSON for output
-          DEPENDENCIES_JSON=$(echo "$DEPENDENCIES" | jq -R -s 'split("\n") | map(select(length > 0)) | map({repo: split("@")[0], version: split("@")[1]})')
-          echo "dependencies=$DEPENDENCIES_JSON" >> $GITHUB_OUTPUT
-
-          DEPENDENCIESV2=$(yq eval '.dependencies' .github/version-manifest.yaml -o=json -I=0 | tr -d '\n')
-          echo "dependenciesV2=$DEPENDENCIESV2" >> $GITHUB_OUTPUT
-          echo "Parsed dependenciesV2: $DEPENDENCIESV2"
-
-          # Set outputs
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION"
 
       - name: Log outputs
         run: |
           echo "Version: ${{ steps.parse_manifest.outputs.version }}"
           echo "Dependencies: ${{ steps.parse_manifest.outputs.dependencies }}"
 
-  trigger-release1:
+  tag-dependencies:
     runs-on: ubuntu-latest
     needs: parse-version-manifest
     strategy:
       matrix:
-        repository: ${{ fromJson(needs.parse-version-manifest.outputs.dependencies) }}
+        dependency: ${{ fromJson(needs.parse-version-manifest.outputs.dependencies) }}
     steps:
-      - name: Log repository
+      - name: Log dependency information
         run: |
-          echo "Triggering release for repository: ${{ matrix.repository }}"
+          echo "Running jon for ${{ matrix.dependency.name }} at ${{matrix.dependency.repo }} with version ${{ matrix.dependency.version }}"
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          repository: ${{ matrix.dependency.repo }}
+      
+      - name: Get latest commit SHA
+        id: get_commit_sha
+        run: |
+          ls  -la
+          echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "commit_sha=$(git rev-parse HEAD)"
 
-  trigger-release2:
-    runs-on: ubuntu-latest
-    needs: parse-version-manifest
-    strategy:
-      matrix:
-        repository: ${{ fromJson(needs.parse-version-manifest.outputs.dependenciesV2) }}
-    steps:
-      - name: Log repository
+        
+      # - name: Create tag
+      #   id: create_tag
+      #   run: |
+      #     curl -s -L \
+      #       -X POST \
+      #       -H "Accept: application/vnd.github+json" \
+      #       -H "Authorization: Bearer ${{secrets.MY_GITHUB_TOKEN}}" \
+      #       -H "X-GitHub-Api-Version: 2022-11-28" \
+      #       https://api.github.com/repos/${{matrix.dependency.repo}}/git/tags \
+      #       -d '{"tag": "${{ matrix.dependency.version }}",
+      #       "message": "version ${{ matrix.dependency.version }}",
+      #       "object": "${{ steps.get_commit_sha.outputs.commit_sha }}",
+      #       "type": "commit"
+      #       }'
+
+      # - name: Push tag v2
+      #   continue-on-error: true
+      #   if: always()  # Ensure this runs even if the previous step fails
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}  # or use MY_GH_PAT
+      #     TARGET_REPO: ${{ matrix.dependency.repo }}  # Replace with actual repo name
+      #     TAG_NAME: "${{ matrix.dependency.version }}"
+      #   run: |
+      #     # Configure git
+      #     git config --global user.name "github-actions[bot]"
+      #     git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+      #     # Clone the target repository
+      #     git clone https://x-access-token:${GITHUB_TOKEN}@github.com/${TARGET_REPO}.git target-repo
+      #     cd target-repo
+          
+      #     # Create and push the tag
+      #     git tag -a ${TAG_NAME} -m "version ${TAG_NAME}"
+      #     git push origin ${TAG_NAME}
+      # - name: Push tag v3
+      #   continue-on-error: true
+      #   if: always()  # Ensure this runs even if the previous step fails
+      #   env:
+      #     GH_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}  # or use MY_GH_PAT
+      #   run: |
+      #     gh api \
+      #       --method POST \
+      #       -H "Accept: application/vnd.github+json" \
+      #       -H "X-GitHub-Api-Version: 2022-11-28" \
+      #       /repos/${{ matrix.dependency.repo }}/git/refs \
+      #       -f ref='refs/tags/${{ matrix.dependency.version }}' \
+      #       -f sha="$(gh api /repos/${{ matrix.dependency.repo }}/git/refs/heads/main --jq '.object.sha')"
+
+      - name: Push tag v4
+        continue-on-error: true
+        if: always()  # Ensure this runs even if the previous step fails
+        env:
+          GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}  # or use MY_GH_PAT
+          TARGET_REPO: ${{ matrix.dependency.repo }}  # Replace with actual repo name
+          TAG_NAME: "${{ matrix.dependency.version }}"
         run: |
-          echo "Triggering release for repository: ${{ matrix.repository }}"
+          set -e
+
+          echo "Getting latest commit SHA from main branch..."
+          COMMIT_SHA=$(curl -s \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${TARGET_REPO}/git/refs/heads/main \
+            | jq -r '.object.sha')
+
+          if [ "$COMMIT_SHA" = "null" ] || [ -z "$COMMIT_SHA" ]; then
+            echo "❌ Failed to get commit SHA from main branch"
+            exit 1
+          fi
+
+          echo "Latest commit SHA: $COMMIT_SHA"
+          echo "Creating tag ${TAG_NAME} in repository ${TARGET_REPO}..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+          -X POST \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${TARGET_REPO}/git/refs \
+          -d "{
+            \"ref\": \"refs/tags/${TAG_NAME}\",
+            \"sha\": \"$COMMIT_SHA\"
+          }")
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)  
+          echo "HTTP Status: $HTTP_STATUS"
+          echo "Response: $RESPONSE_BODY"
+          
+          case $HTTP_STATUS in
+            201)
+              echo "✅ Tag ${TAG_NAME} created successfully!"
+              ;;
+            422)
+              # Check if it's because tag already exists
+              if echo "$RESPONSE_BODY" | jq -e '.message' | grep -q "already exists"; then
+                echo "ℹ️ Tag ${TAG_NAME} already exists - moving on."
+              else
+                echo "❌ Failed to create tag: $(echo "$RESPONSE_BODY" | jq -r '.message')"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "❌ Unexpected error creating tag (HTTP $HTTP_STATUS)"
+              echo "Response: $RESPONSE_BODY"
+              exit 1
+              ;;
+          esac
+        
+          echo "✅ ${TARGET_REPO} tagged successfully with tag ${TAG_NAME}!"

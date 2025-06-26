@@ -1,0 +1,66 @@
+name: Release Trigger
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/version-manifest.yaml
+
+jobs:
+  parse-version-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse version manifest
+        id: parse_manifest
+        run: |
+          echo "Parsing version manifest..."
+          VERSION=$(yq eval '.parent.version' .github/version-manifest.yaml)
+          echo "Parsed version: $VERSION"
+
+          # for each dependency, extract the repo and version
+          DEPENDENCIES=$(yq eval '.dependencies[] | "\(.repo)@\(.version)"' .github/version-manifest.yaml)
+          echo "Parsed dependencies: $DEPENDENCIES"
+
+          # Format the dependencies as JSON for output
+          DEPENDENCIES_JSON=$(echo "$DEPENDENCIES" | jq -R -s 'split("\n") | map(select(length > 0)) | map({repo: split("@")[0], version: split("@")[1]})')
+          echo "dependencies=$DEPENDENCIES_JSON" >> $GITHUB_OUTPUT
+
+          DEPENDENCIESV2=$(yq eval '.dependencies' .github/version-manifest.yaml -o=json -I=0 | tr -d '\n')
+          echo "dependenciesV2=$DEPENDENCIESV2" >> $GITHUB_OUTPUT
+          echo "Parsed dependenciesV2: $DEPENDENCIESV2"
+
+          # Set outputs
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Log outputs
+        run: |
+          echo "Version: ${{ steps.parse_manifest.outputs.version }}"
+          echo "Dependencies: ${{ steps.parse_manifest.outputs.dependencies }}"
+
+  trigger-release1:
+    runs-on: ubuntu-latest
+    needs: parse-version-manifest
+    strategy:
+      matrix:
+        repository: ${{ fromJson(needs.parse-version-manifest.outputs.dependencies) }}
+    steps:
+      - name: Log repository
+        run: |
+          echo "Triggering release for repository: ${{ matrix.repository }}"
+
+  trigger-release2:
+    runs-on: ubuntu-latest
+    needs: parse-version-manifest
+    strategy:
+      matrix:
+        repository: ${{ fromJson(needs.parse-version-manifest.outputs.dependenciesV2) }}
+    steps:
+      - name: Log repository
+        run: |
+          echo "Triggering release for repository: ${{ matrix.repository }}"

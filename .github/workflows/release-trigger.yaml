@@ -286,7 +286,7 @@ jobs:
           workflow: ${{ env.DEPENDENCY_WORKFLOW }}
           ref: ${{ matrix.dependency.version }}
           repo: ${{ matrix.dependency.repo }}
-          token: ${{ matrix.dependency.repo }}
+          token: ${{ secrets.MY_GITHUB_TOKEN }}
           run-name: ${{ env.RUN_NAME }}
           inputs: >-
             {

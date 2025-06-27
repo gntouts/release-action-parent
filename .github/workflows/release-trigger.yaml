@@ -51,6 +51,7 @@ jobs:
 
   tag-dependencies:
     name: Tag Dependencies
+    needs: parse-version-manifest
     uses: ./.github/workflows/tag-repo.yaml
     strategy:
       matrix:

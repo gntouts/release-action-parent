@@ -145,7 +145,7 @@ jobs:
             https://api.github.com/repos/${TARGET_REPO}/git/refs \
             -d "{
               \"force\": true,
-              \"sha\": \"$COMMIT_SHA\"
+              \"sha\": \"$TAG_SHA\"
             }")
           HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
           RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)

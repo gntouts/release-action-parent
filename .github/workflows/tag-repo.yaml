@@ -115,37 +115,57 @@ jobs:
         run: |
           set -e
           echo "Getting latest commit SHA from main branch..."
-          COMMIT_SHA=$(curl -s \
+          LATEST_SHA=$(curl -s \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github.v3+json" \
             https://api.github.com/repos/${TARGET_REPO}/git/refs/heads/main \
             | jq -r '.object.sha')
 
-          if [ "$COMMIT_SHA" = "null" ] || [ -z "$COMMIT_SHA" ]; then
+          if [ "$LATEST_SHA" = "null" ] || [ -z "$LATEST_SHA" ]; then
             echo "❌ Failed to get commit SHA from main branch"
             exit 1
           fi
-          echo "Latest commit SHA: $COMMIT_SHA"
-          TAG_SHA=$(curl -s \
+          echo "Latest commit SHA: $LATEST_SHA"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${TARGET_REPO}/git/refs/tags/${TAG_NAME} \
-             | jq -r '.object.sha')
-          echo "Current tag SHA: $TAG_SHA"
+            https://api.github.com/repos/${TARGET_REPO}/git/refs/tags/${TAG_NAME})
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "❌ Failed to get tag ${TAG_NAME} details (HTTP $HTTP_STATUS)"
+            echo "Response: $RESPONSE_BODY"
+            exit 1
+          fi
+          TAG_SHA=$(echo "$RESPONSE_BODY" | jq -r '.object.sha')
+          echo "Tag SHA: $TAG_SHA"
 
-          if [ "$COMMIT_SHA" = "$TAG_SHA" ]; then
-            echo "ℹ️ Tag ${TAG_NAME} is already up-to-date with commit ${COMMIT_SHA}."
-            exit 0
+          # check if TAG_SHA is empty or null
+          if [ "$TAG_SHA" = "null" ] || [ -z "$TAG_SHA" ]; then
+            echo "❌ Failed to get tag SHA for ${TAG_NAME}"
+            exit 1
           fi
 
+          # check if LATEST_SHA is empty or null
+          if [ "$LATEST_SHA" = "null" ] || [ -z "$LATEST_SHA" ]; then
+            echo "❌ Failed to get latest commit SHA from main branch"
+            exit 1
+          fi
+
+          if [ "$LATEST_SHA" = "$TAG_SHA" ]; then
+            echo "ℹ️ Tag ${TAG_NAME} is already up-to-date with commit ${LATEST_SHA}."
+            exit 0
+          fi
+          
           RESPONSE=$(curl -s -w "\n%{http_code}" \
             -X PATCH \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${TARGET_REPO}/git/refs \
+            https://api.github.com/repos/${TARGET_REPO}/git/refs/tags/${TAG_NAME} \
             -d "{
               \"force\": true,
-              \"sha\": \"$TAG_SHA\"
+              \"sha\": \"$LATEST_SHA\"
             }")
           HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
           RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)

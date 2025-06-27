@@ -1,0 +1,14 @@
+
+name: Check Children Workflows
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [workflow-a-trigger]
+
+jobs:
+  workflow-a-triggered:
+    if: github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process Workflow A trigger
+        run: exit 0

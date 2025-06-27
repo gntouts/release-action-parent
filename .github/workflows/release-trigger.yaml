@@ -54,72 +54,7 @@ jobs:
       matrix:
         dependency: ${{ fromJson(needs.parse-version-manifest.outputs.dependencies) }}
     steps:
-      - name: Log dependency information
-        run: |
-          echo "Running jon for ${{ matrix.dependency.name }} at ${{matrix.dependency.repo }} with version ${{ matrix.dependency.version }}"
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          repository: ${{ matrix.dependency.repo }}
-      
-      - name: Get latest commit SHA
-        id: get_commit_sha
-        run: |
-          ls  -la
-          echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-          echo "commit_sha=$(git rev-parse HEAD)"
-
-        
-      # - name: Create tag
-      #   id: create_tag
-      #   run: |
-      #     curl -s -L \
-      #       -X POST \
-      #       -H "Accept: application/vnd.github+json" \
-      #       -H "Authorization: Bearer ${{secrets.MY_GITHUB_TOKEN}}" \
-      #       -H "X-GitHub-Api-Version: 2022-11-28" \
-      #       https://api.github.com/repos/${{matrix.dependency.repo}}/git/tags \
-      #       -d '{"tag": "${{ matrix.dependency.version }}",
-      #       "message": "version ${{ matrix.dependency.version }}",
-      #       "object": "${{ steps.get_commit_sha.outputs.commit_sha }}",
-      #       "type": "commit"
-      #       }'
-
-      # - name: Push tag v2
-      #   continue-on-error: true
-      #   if: always()  # Ensure this runs even if the previous step fails
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}  # or use MY_GH_PAT
-      #     TARGET_REPO: ${{ matrix.dependency.repo }}  # Replace with actual repo name
-      #     TAG_NAME: "${{ matrix.dependency.version }}"
-      #   run: |
-      #     # Configure git
-      #     git config --global user.name "github-actions[bot]"
-      #     git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-      #     # Clone the target repository
-      #     git clone https://x-access-token:${GITHUB_TOKEN}@github.com/${TARGET_REPO}.git target-repo
-      #     cd target-repo
-          
-      #     # Create and push the tag
-      #     git tag -a ${TAG_NAME} -m "version ${TAG_NAME}"
-      #     git push origin ${TAG_NAME}
-      # - name: Push tag v3
-      #   continue-on-error: true
-      #   if: always()  # Ensure this runs even if the previous step fails
-      #   env:
-      #     GH_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}  # or use MY_GH_PAT
-      #   run: |
-      #     gh api \
-      #       --method POST \
-      #       -H "Accept: application/vnd.github+json" \
-      #       -H "X-GitHub-Api-Version: 2022-11-28" \
-      #       /repos/${{ matrix.dependency.repo }}/git/refs \
-      #       -f ref='refs/tags/${{ matrix.dependency.version }}' \
-      #       -f sha="$(gh api /repos/${{ matrix.dependency.repo }}/git/refs/heads/main --jq '.object.sha')"
-
-      - name: Push tag v4
+      - name: Create and push tag
         continue-on-error: true
         if: always()  # Ensure this runs even if the previous step fails
         env:
@@ -155,9 +90,7 @@ jobs:
           }")
           HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
           RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)  
-          echo "HTTP Status: $HTTP_STATUS"
-          echo "Response: $RESPONSE_BODY"
-          
+          echo "HTTP Status: $HTTP_STATUS"          
           case $HTTP_STATUS in
             201)
               echo "✅ Tag ${TAG_NAME} created successfully!"

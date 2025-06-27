@@ -285,7 +285,7 @@ jobs:
             {
               "run-name": "${{ env.RUN_NAME }}",
               "trigger-id": "${{ github.run_id }}",
-              "calling-repo": "${{ github.repository }}",
+              "calling-repo": "${{ github.repository }}"
             }
           display-workflow-run-url-interval: 10s
           display-workflow-run-url-timeout: 2m

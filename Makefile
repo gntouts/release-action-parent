@@ -43,13 +43,7 @@ build-all: clean
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags="$(LDFLAGS_COMMON) -s -w" -trimpath -o $(CURDIR)/dist/echo-linux-amd64 main.go
 	# Linux ARM64  
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -a -ldflags="$(LDFLAGS_COMMON) -s -w" -trimpath -o $(CURDIR)/dist/echo-linux-arm64 main.go
-	# Windows AMD64
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -a -ldflags="$(LDFLAGS_COMMON) -s -w" -trimpath -o $(CURDIR)/dist/echo-windows-amd64.exe main.go
-	# macOS AMD64
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -a -ldflags="$(LDFLAGS_COMMON) -s -w" -trimpath -o $(CURDIR)/dist/echo-darwin-amd64 main.go
-	# macOS ARM64 (Apple Silicon)
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -a -ldflags="$(LDFLAGS_COMMON) -s -w" -trimpath -o $(CURDIR)/dist/echo-darwin-arm64 main.go
-
+	
 # Show binary sizes
 size:
 	@echo "Binary sizes:"

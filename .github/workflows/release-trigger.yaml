@@ -101,6 +101,7 @@ jobs:
               if echo "$RESPONSE_BODY" | jq -e '.message' | grep -q "already exists"; then
                 echo "ℹ️ Tag ${TAG_NAME} already exists."
                 echo "update_tag=true" >> $GITHUB_OUTPUT
+                exit 0
               else
                 echo "❌ Failed to create tag: $(echo "$RESPONSE_BODY" | jq -r '.message')"
                 exit 1
@@ -138,7 +139,7 @@ jobs:
           -X PATCH \
           -H "Authorization: token ${GITHUB_TOKEN}" \
           -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/repos/${TARGET_REPO}/git/refs/${TAG_NAME} \
+          https://api.github.com/repos/${TARGET_REPO}/git/refs//tags/${TAG_NAME} \
           -d "{
             \"force\": true,
             \"sha\": \"$COMMIT_SHA\"
@@ -207,6 +208,7 @@ jobs:
               if echo "$RESPONSE_BODY" | jq -e '.message' | grep -q "already exists"; then
                 echo "ℹ️ Tag ${TAG_NAME} already exists."
                 echo "update_tag=true" >> $GITHUB_OUTPUT
+                exit 0
               else
                 echo "❌ Failed to create tag: $(echo "$RESPONSE_BODY" | jq -r '.message')"
                 exit 1
@@ -228,7 +230,6 @@ jobs:
           TAG_NAME: "${{ needs.parse-version-manifest.outputs.version }}"
         run: |
           set -e
-
           echo "Getting latest commit SHA from main branch..."
           COMMIT_SHA=$(curl -s \
             -H "Authorization: token ${GITHUB_TOKEN}" \
@@ -245,7 +246,7 @@ jobs:
           -X PATCH \
           -H "Authorization: token ${GITHUB_TOKEN}" \
           -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/repos/${TARGET_REPO}/git/refs/${TAG_NAME} \
+          https://api.github.com/repos/${TARGET_REPO}/git/refs/tags/${TAG_NAME} \
           -d "{
             \"force\": true,
             \"sha\": \"$COMMIT_SHA\"

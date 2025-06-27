@@ -29,17 +29,24 @@ jobs:
           TAG_NAME: ${{ inputs.tag_name }}
         run: |
           set -e
-          RESPONSE=$(curl -s -w \
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
             -H "Authorization: token ${GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github.v3+json" \
             https://api.github.com/repos/${TARGET_REPO}/git/refs/tags/${TAG_NAME})
-          if echo "$RESPONSE" | jq -e '.status' | grep -q "404"; then
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)  
+
+          echo "HTTP Status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" -eq 404 ]; then
             echo "Tag ${TAG_NAME} does not exist in ${TARGET_REPO}."
             echo "tag_action=create" >> $GITHUB_OUTPUT
-            exit 0
-          else
+          elif [ "$HTTP_STATUS" -eq 200 ]; then
             echo "Tag ${TAG_NAME} already exists in ${TARGET_REPO}."
             echo "tag_action=update" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Unexpected error checking tag (HTTP $HTTP_STATUS)"
+            echo "Response: $RESPONSE_BODY"
+            exit 1
           fi
       
       - name: Create Tag

@@ -1,0 +1,156 @@
+name: Tag a Repository
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        type: string
+        description: 'Tag name to create'
+        required: true
+      target_repo:
+        type: string
+        description: 'Target repository to tag'
+        required: true
+    secrets:
+      MY_GITHUB_TOKEN:
+        description: 'GitHub token with repo access'
+        required: true
+
+
+jobs:
+  tag-repo:
+    name: Tag Repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if tag exists
+        id: check_tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          set -e
+          RESPONSE=$(curl -s -w \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${TARGET_REPO}/git/refs/tags/${TAG_NAME})
+          if echo "$RESPONSE" | jq -e '.status' | grep -q "404"; then
+            echo "Tag ${TAG_NAME} does not exist in ${TARGET_REPO}."
+            echo "tag_action=create" >> $GITHUB_OUTPUT
+            exit 0
+          else
+            echo "Tag ${TAG_NAME} already exists in ${TARGET_REPO}."
+            echo "tag_action=update" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create Tag
+        id: create_tag
+        if: ${{ steps.check_tag.outputs.tag_action == 'create' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          set -e
+          echo "Getting latest commit SHA from main branch..."
+          COMMIT_SHA=$(curl -s \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${TARGET_REPO}/git/refs/heads/main \
+            | jq -r '.object.sha')
+
+          if [ "$COMMIT_SHA" = "null" ] || [ -z "$COMMIT_SHA" ]; then
+            echo "❌ Failed to get commit SHA from main branch"
+            exit 1
+          fi
+          echo "Latest commit SHA: $COMMIT_SHA"
+          echo "Creating tag ${TAG_NAME} in repository ${TARGET_REPO}..."
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+          -X POST \
+          -H "Authorization: token ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${TARGET_REPO}/git/refs \
+          -d "{
+            \"ref\": \"refs/tags/${TAG_NAME}\",
+            \"sha\": \"$COMMIT_SHA\"
+          }")
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)  
+          echo "HTTP Status: $HTTP_STATUS"          
+          case $HTTP_STATUS in
+            201)
+              echo "✅ Tag ${TAG_NAME} created successfully!"
+              ;;
+            422)
+              # Check if it's because tag already exists
+              if echo "$RESPONSE_BODY" | jq -e '.message' | grep -q "already exists"; then
+                echo "❌ Tag ${TAG_NAME} already exists."
+                exit 1
+              else
+                echo "❌ Failed to create tag: $(echo "$RESPONSE_BODY" | jq -r '.message')"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "❌ Unexpected error creating tag (HTTP $HTTP_STATUS)"
+              echo "Response: $RESPONSE_BODY"
+              exit 1
+              ;;
+          esac
+      
+      - name: Update Tag
+        id: update_tag
+        if: ${{ steps.check_tag.outputs.tag_action == 'update' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          set -e
+          echo "Getting latest commit SHA from main branch..."
+          COMMIT_SHA=$(curl -s \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${TARGET_REPO}/git/refs/heads/main \
+            | jq -r '.object.sha')
+
+          if [ "$COMMIT_SHA" = "null" ] || [ -z "$COMMIT_SHA" ]; then
+            echo "❌ Failed to get commit SHA from main branch"
+            exit 1
+          fi
+          echo "Latest commit SHA: $COMMIT_SHA"
+          TAG_SHA=$(curl -s \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${TARGET_REPO}/git/refs/tags/${TAG_NAME} \
+             | jq -r '.object.sha')
+          echo "Current tag SHA: $TAG_SHA"
+
+          if [ "$COMMIT_SHA" = "$TAG_SHA" ]; then
+            echo "ℹ️ Tag ${TAG_NAME} is already up-to-date with commit ${COMMIT_SHA}."
+            exit 0
+          fi
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X PATCH \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${TARGET_REPO}/git/refs \
+            -d "{
+              \"force\": true,
+              \"sha\": \"$COMMIT_SHA\"
+            }")
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP Status: $HTTP_STATUS"
+          case $HTTP_STATUS in
+            200)
+              echo "✅ Tag ${TAG_NAME} updated successfully!"
+              ;;
+            *)
+              echo "❌ Tag ${TAG_NAME} update failed (HTTP $HTTP_STATUS)"
+              echo "Response: $RESPONSE_BODY"
+              exit 1
+              ;;
+          esac    

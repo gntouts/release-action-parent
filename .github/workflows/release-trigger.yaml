@@ -9,9 +9,11 @@ on:
   workflow_dispatch:
 env:
   DEPENDENCY_WORKFLOW: 'parent-release.yaml'
+  ARTIFACTS_PATH: 'dist/'
 
 jobs:
   parse-version-manifest:
+    name: Parse Version Manifest
     runs-on: ubuntu-latest
     outputs: 
       dependencies: ${{ steps.parse_manifest.outputs.dependencies }}
@@ -48,55 +50,29 @@ jobs:
         run: |
           echo "Version: ${{ steps.parse_manifest.outputs.version }}"
           echo "Dependencies: ${{ steps.parse_manifest.outputs.dependencies }}"
-
-  tag-dependencies:
-    name: Tag Dependencies
-    needs: parse-version-manifest
+       
+  tag-parent: 
+    name: Tag Parent Repository
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        dependency: ${{ fromJson(needs.parse-version-manifest.outputs.dependencies) }}
-    
-    steps:
-      - name: Tag Dependency Repository
-        id: tag_dependency
-        uses: gntouts/tag-remote-repo-action@v1.0.0
-        with:
-          repository: ${{ matrix.dependency.repo }}
-          tag: ${{ matrix.dependency.version }}
-          token: ${{ secrets.MY_GITHUB_TOKEN }}
-      - name: Log outputs
-        run: |
-          echo "Dependency: ${{ matrix.dependency.name }}"
-          echo "Repository: ${{ matrix.dependency.repo }}"
-          echo "Version: ${{ matrix.dependency.version }}"
-          echo "result: ${{steps.tag_dependency.outputs.result}}
-          echo "message: ${{steps.tag_dependency.outputs.message}}
-          echo "tag: ${{steps.tag_dependency.outputs.tag}}
-          echo "commit: ${{steps.tag_dependency.outputs.commit}}
-
-        
-  tag-parent:
-    runs-on: ubuntu-latest
-    needs: [parse-version-manifest, tag-dependencies]
+    needs: [parse-version-manifest]
     if: needs.parse-version-manifest.outputs.version != ''
     steps:
       - name: Tag Parent Repository
         uses: gntouts/tag-remote-repo-action@v1.0.0
-        id: tag_dependency
+        id: tag_parent
         with:
           repository: ${{ github.repository }}
           tag: ${{ needs.parse-version-manifest.outputs.version }}
           token: ${{ secrets.MY_GITHUB_TOKEN }}
-          skip_update: true  # Skip update if tag already exists in parent repository
+          skip_update: true
       - name: Log outputs
         run: |
           echo "Repository: ${{ github.repository }}"
-          echo "Version: ${{ steps.tag_dependency.outputs.tag }}"
-          echo "result: ${{steps.tag_dependency.outputs.result}}
-          echo "message: ${{steps.tag_dependency.outputs.message}}
-          echo "tag: ${{steps.tag_dependency.outputs.tag}}
-          echo "commit: ${{steps.tag_dependency.outputs.commit}}
+          echo "Version: ${{ steps.tag_parent.outputs.tag }}"
+          echo "result: ${{steps.tag_parent.outputs.result}}
+          echo "message: ${{steps.tag_parent.outputs.message}}
+          echo "tag: ${{steps.tag_parent.outputs.tag}}
+          echo "commit: ${{steps.tag_parent.outputs.commit}}
 
   test:
     name: Run Tests
@@ -132,8 +108,6 @@ jobs:
     name: Build Binaries
     runs-on: ubuntu-latest
     needs: [test, parse-version-manifest]  # Only run after tests pass
-    outputs:
-      release_id: ${{ steps.create_release.outputs.id }}
       
     steps:
     - name: Checkout code
@@ -154,138 +128,63 @@ jobs:
       
     - name: Build binaries for all platforms
       run: make build-all
-      
-    - name: Create initial release
-      uses: softprops/action-gh-release@v2
-      id: create_release
-      with:
-        files: |
-          dist/*
-        body: |
-          ## Release ${{needs.parse-version-manifest.outputs.version}}
-          
-          ### Changes
-          - Automated release from tag ${{needs.parse-version-manifest.outputs.version}}
-          ```
-        draft: true
-        prerelease: true
-        generate_release_notes: true
-        tag_name: ${{needs.parse-version-manifest.outputs.version}}
-      env:
-        GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
-        
-    - name: Upload build artifacts
+
+    - name: Upload build artifacts # This step is required by the children workflows to access the build artifacts
       uses: actions/upload-artifact@v4
       with:
         name: artifacts-${{needs.parse-version-manifest.outputs.version}}
-        path: dist/
+        path: ${{ env.ARTIFACTS_PATH }}
         retention-days: 30
 
-  trigger-depencies-workflows:
+  release:
+    name: Create Release
     runs-on: ubuntu-latest
     needs: [build, parse-version-manifest]
+    if: needs.parse-version-manifest.outputs.version != ''
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-${{needs.parse-version-manifest.outputs.version}}
+          path: ${{ env.ARTIFACTS_PATH }}
+          merge-multiple: true
+      - name: Create initial release
+        uses: softprops/action-gh-release@v2
+        id: create_release
+        with:
+          files: |
+            dist/*
+          body: |
+            ## Release ${{needs.parse-version-manifest.outputs.version}}
+            
+            ### Changes
+            - Automated release from tag ${{needs.parse-version-manifest.outputs.version}}
+            - Dependencies updated from version manifest
+            - Triggered by workflow run ${{ github.run_id }}
+          name: Release ${{needs.parse-version-manifest.outputs.version}}
+          draft: false
+          prerelease: true
+          generate_release_notes: true
+          tag_name: ${{needs.parse-version-manifest.outputs.version}}
+        env:
+          GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
+
+  trigger-depencies-workflows:
+    name: Trigger Dependency Workflows
+    runs-on: ubuntu-latest
+    needs: [release, parse-version-manifest]
     if: needs.parse-version-manifest.outputs.dependencies != ''
-    continue-on-error: true
+    continue-on-error: false
     strategy:
       fail-fast: false
       matrix:
         dependency: ${{ fromJson(needs.parse-version-manifest.outputs.dependencies) }}
-    steps:      
-      - name: Trigger release workflow in dependency repository
-        id: trigger-dependency
-        uses: the-actions-org/workflow-dispatch@v4
-        env:
-          RUN_NAME: >-
-            Update External Repo ${{ github.repository }}
-            [Run ID: ${{ github.run_id }}]
-        with:
-          workflow: ${{ env.DEPENDENCY_WORKFLOW }}
-          ref: ${{ matrix.dependency.version }}
-          repo: ${{ matrix.dependency.repo }}
-          token: ${{ secrets.MY_GITHUB_TOKEN }}
-          run-name: ${{ env.RUN_NAME }}
-          inputs: >-
-            {
-              "run-name": "${{ env.RUN_NAME }}",
-              "trigger-id": "${{ github.run_id }}",
-              "calling-repo": "${{ github.repository }}",
-              "release-tag": "${{needs.parse-version-manifest.outputs.version}}"
-            }
-          display-workflow-run-url-interval: 10s
-          display-workflow-run-url-timeout: 2m
-          wait-for-completion-interval: 10s
-          wait-for-completion-timeout: 20m
-          workflow-logs: json-output
-      - name: Record failure
-        if: failure()
-        run: |
-          mkdir -p failures
-
-          echo "{\"name\":\"${{ matrix.dependency.name }}\", \"repo\":\"${{ matrix.dependency.repo }}\", \"version\":\"${{ matrix.dependency.version }}\"}" > failures/${{ matrix.dependency.name }}.txt
-          echo "failed=${{ matrix.dependency }}" >> $GITHUB_OUTPUT
-      - name: Upload failure info
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: failed-dependency-${{ matrix.dependency.name }}
-          path: failures/${{ matrix.dependency.name }}.txt
-      - name: Exit on success
-        if: success()
-        run: exit 0
-  
-  handle-failures:
-    needs: trigger-depencies-workflows
-    if: always()
-    runs-on: ubuntu-latest
-    outputs:
-      failed-dependencies: ${{ steps.extract-failed.outputs.failed-dependencies }}
-      rerun: ${{ steps.extract-failed.outputs.rerun }}
-
     steps:
-      - name: Download all failure artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: failed-dependency-*
-          merge-multiple: true
-          path: failures/
-          
-      - name: Extract failed dependencies
-        id: extract-failed
-        run: |
-          ls -lA failures/
-          cat failures/*.txt || echo "No failures found"
-          if [ -d "failures" ] && [ "$(ls -A failures/)" ]; then
-            # Collect all dependency objects and create proper JSON array
-            failed_deps=$(cat failures/*.txt | jq -s -c '.')
-            echo "Failed dependencies: $failed_deps"
-            failed_deps=$(echo $failed_deps | tr -d '\n')
-            echo "failed-dependencies=$failed_deps" >> $GITHUB_OUTPUT
-            echo "rerun=\"true\"" >> $GITHUB_OUTPUT
-          else
-            echo "failed-dependencies=[]" >> $GITHUB_OUTPUT
-            echo "rerun=\"false\"" >> $GITHUB_OUTPUT
-          fi
-      - name: Log outputs
-        run: |
-          echo "Failed dependencies: ${{ steps.extract-failed.outputs.failed-dependencies }}"
-
-  rerun-failed-dependencies:
-    name: Rerun Failed Dependencies
-    runs-on: ubuntu-latest
-    needs: [handle-failures, parse-version-manifest]
-    if: always() && contains(needs.handle-failures.outputs.rerun, 'true')
-    strategy:
-      fail-fast: false
-      matrix:
-        dependency: ${{ fromJson(needs.handle-failures.outputs.failed-dependencies) }}
-    steps:
-      - name: Debug
-        run: |
-          echo "Rerun trigger: ${{needs.handle-failures.outputs.rerun}}"
-          echo "Rerunning failed dependency: ${{ matrix.dependency.name }}"
-          echo "Repository: ${{ matrix.dependency.repo }}"
-          echo "Version: ${{ matrix.dependency.version }}"
-      - name: Tag remote repository
+      - name: Tag Dependency Repository
         id: tag_dependency
         uses: gntouts/tag-remote-repo-action@v1.0.0
         with:
@@ -301,12 +200,12 @@ jobs:
           echo "message: ${{steps.tag_dependency.outputs.message}}
           echo "tag: ${{steps.tag_dependency.outputs.tag}}
           echo "commit: ${{steps.tag_dependency.outputs.commit}}
-      - name: Trigger release workflow in failed dependency repository
-        id: rerun-dependency
+      - name: Trigger release workflow in dependency repository
+        id: trigger-dependency
         uses: the-actions-org/workflow-dispatch@v4
         env:
           RUN_NAME: >-
-            Rerun Failed Dependency ${{ matrix.dependency.name }}
+            Update External Repo ${{ github.repository }}
             [Run ID: ${{ github.run_id }}]
         with:
           workflow: ${{ env.DEPENDENCY_WORKFLOW }}

@@ -1,5 +1,5 @@
 parent:
-  version: v0.1.1
+  version: v0.0.1
 dependencies:
   - child1:
       repo: gntouts/release-action-child1

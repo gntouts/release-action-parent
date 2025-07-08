@@ -1,0 +1,161 @@
+name: Test urunc-deploy on k3s
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+jobs:
+  run:
+    name: Install urunc-deploy on k3s
+    runs-on: ubuntu-latest
+    # env:
+      # KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+    steps:
+      - name: Add runner user to KVM group
+        id: kvm-setup
+        run: |
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            sudo usermod -a -G kvm $USER
+      - name: Install k3s
+        run: |
+          curl -sfL https://get.k3s.io | sh -
+          sudo systemctl enable k3s
+          sudo systemctl start k3s
+          sudo k3s kubectl get nodes
+      - name: Wait for k3s to be ready
+        run: |
+          for i in {1..30}; do
+            if sudo k3s kubectl get nodes; then
+              break
+            fi
+            sleep 5
+          done
+      - name: Copy kubeconfig to runner user
+        run: |
+          sudo mkdir -p /home/runner/.kube
+          sudo cp /etc/rancher/k3s/k3s.yaml /home/runner/.kube/config
+          sudo chown runner:runner /home/runner/.kube/config
+          sudo chmod 644 /home/runner/.kube/config
+      - name: Install urunc-deploy RBAC
+        run: |
+          KUBECONFIG=/home/runner/.kube/config kubectl apply -f https://raw.githubusercontent.com/urunc-dev/urunc/main/deployment/urunc-deploy/urunc-rbac/urunc-rbac.yaml
+      - name: Install urunc-deploy DaemonSet
+        run: |
+          KUBECONFIG=/home/runner/.kube/config kubectl apply -k https://github.com/urunc-dev/urunc/deployment/urunc-deploy/urunc-deploy/overlays/k3s?ref=main
+      - name: Install urunc runtime class
+        run: |
+          KUBECONFIG=/home/runner/.kube/config kubectl apply -f https://raw.githubusercontent.com/urunc-dev/urunc/refs/heads/main/deployment/urunc-deploy/runtimeclasses/runtimeclass.yaml
+      - name: Spawn a unikernel
+        run: |
+          cat <<EOF | KUBECONFIG=/home/runner/.kube/config kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            labels:
+              run: nginx-urunc
+            name: nginx-urunc
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                run: nginx-urunc
+            template:
+              metadata:
+                labels:
+                  run: nginx-urunc
+              spec:
+                runtimeClassName: urunc
+                containers:
+                - image: harbor.nbfc.io/nubificus/urunc/nginx-qemu-unikraft-initrd:latest
+                  imagePullPolicy: Always
+                  name: nginx-urunc
+                  command: ["sleep"]
+                  args: ["infinity"]
+                  ports:
+                  - containerPort: 80
+                    protocol: TCP
+                  resources:
+                    requests:
+                      cpu: 10m
+                restartPolicy: Always
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nginx-urunc
+          spec:
+            ports:
+            - port: 80
+              protocol: TCP
+              targetPort: 80
+              nodePort: 30080
+            selector:
+              run: nginx-urunc
+            sessionAffinity: None
+            type: NodePort
+          EOF
+      - name: Describe deployments and pods
+        run: |
+          KUBECONFIG=/home/runner/.kube/config kubectl describe deployment nginx-urunc || true
+          KUBECONFIG=/home/runner/.kube/config kubectl get pods -o wide
+      - name: Wait for nginx-urunc pod to be ready
+        continue-on-error: true
+        run: |
+          KUBECONFIG=/home/runner/.kube/config kubectl wait --for=condition=Ready pod -l run=nginx-urunc --timeout=120s
+      - name: Wait for nginx-urunc deployment to be available
+        continue-on-error: true
+
+        run: |
+          KUBECONFIG=/home/runner/.kube/config kubectl rollout status deployment/nginx-urunc --timeout=120s
+      - name: Check nginx-urunc pod status
+        continue-on-error: true
+        run: |
+          KUBECONFIG=/home/runner/.kube/config kubectl get pods -A -o wide
+      - name: Get all pods
+        run: |
+          KUBECONFIG=/home/runner/.kube/config kubectl get pods -o wide
+      - name: Extract nginx-urunc pod IP address
+        id: pod-ip
+        run: |
+          POD_IP=$(KUBECONFIG=/home/runner/.kube/config kubectl get pods -l run=nginx-urunc -o jsonpath='{.items[0].status.podIP}')
+          KUBECONFIG=/home/runner/.kube/config kubectl describe pod -l run=nginx-urunc
+          echo "pod_ip=$POD_IP" >> $GITHUB_OUTPUT
+          echo "Pod IP: $POD_IP"
+      - name: Test nginx-urunc pod
+        continue-on-error: true
+        run: |
+          KUBECONFIG=/home/runner/.kube/config kubectl run tmp-curl --restart=Never --image alpine/curl --\
+            http://${{steps.pod-ip.outputs.pod_ip}}
+          
+          # Wait for pod to complete
+          KUBECONFIG=/home/runner/.kube/config kubectl wait --for=condition=Ready pod/tmp-curl --timeout=60s
+          
+          # Get the output
+          KUBECONFIG=/home/runner/.kube/config kubectl logs tmp-curl
+          
+          # Check if pod succeeded
+          STATUS=$(KUBECONFIG=/home/runner/.kube/config kubectl get pod tmp-curl -o jsonpath='{.status.phase}')
+          if [ "$STATUS" != "Succeeded" ]; then
+            exit 1
+          fi
+          
+          # Cleanup
+          KUBECONFIG=/home/runner/.kube/config kubectl delete pod tmp-curl
+      - name: Extract service IP
+        id: service-ip
+        run: |
+          SERVICE_IP=$(KUBECONFIG=/home/runner/.kube/config kubectl get service nginx-urunc -o jsonpath='{.spec.clusterIP}')
+          echo "service_ip=$SERVICE_IP" >> $GITHUB_OUTPUT
+          echo "Service IP: $SERVICE_IP"
+      - name: Test service IP
+        continue-on-error: true
+        run: |
+          curl http://${{steps.service-ip.outputs.service_ip}}
+      - name: Test service NodePort
+        continue-on-error: true
+        run: |
+          curl -s http://localhost:30080 || exit 1
+          echo "Service accessible via NodePort!"
